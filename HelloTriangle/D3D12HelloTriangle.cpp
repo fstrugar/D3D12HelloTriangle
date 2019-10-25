@@ -12,6 +12,23 @@
 #include "stdafx.h"
 #include "D3D12HelloTriangle.h"
 
+#define USE_DXC
+#define USE_DASH_VD
+
+#ifdef USE_DXC
+#include <locale>
+#include <codecvt>
+#include <string>
+#include "dxc/dxcapi.use.h"
+//#include "dxc/addref.h"
+#endif
+
+#ifdef USE_DXC
+static dxc::DxcDllSupport       s_dxcSupport;
+static IDxcCompiler *           s_dxcCompiler = nullptr;
+static IDxcLibrary *            s_dxcLibrary = nullptr;
+#endif
+
 D3D12HelloTriangle::D3D12HelloTriangle(UINT width, UINT height, std::wstring name) :
     DXSample(width, height, name),
     m_frameIndex(0),
@@ -23,6 +40,19 @@ D3D12HelloTriangle::D3D12HelloTriangle(UINT width, UINT height, std::wstring nam
 
 void D3D12HelloTriangle::OnInit()
 {
+#ifdef USE_DXC
+    s_dxcSupport.Initialize( );
+
+    HRESULT hr = E_FAIL;
+
+    if( s_dxcSupport.IsEnabled( ) )
+        hr = s_dxcSupport.CreateInstance( CLSID_DxcCompiler, &s_dxcCompiler );
+    ThrowIfFailed( hr );
+    if( SUCCEEDED( hr ) )
+        hr = s_dxcSupport.CreateInstance( CLSID_DxcLibrary, &s_dxcLibrary );
+    ThrowIfFailed( hr );    // Unable to create DirectX12 shader compiler - are 'dxcompiler.dll' and 'dxil.dll' files in place?
+#endif
+
     LoadPipeline();
     LoadAssets();
 }
@@ -134,6 +164,119 @@ void D3D12HelloTriangle::LoadPipeline()
     ThrowIfFailed(m_device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&m_commandAllocator)));
 }
 
+#if defined(USE_DXC)
+HRESULT DXCCompileFromFile( _In_ LPCWSTR pFileName, CONST D3D_SHADER_MACRO* pDefines, _In_opt_ ID3DInclude* pInclude, _In_ LPCSTR pEntrypoint, 
+                            _In_ LPCSTR pTarget, _In_ UINT Flags1, _In_ UINT Flags2, _Out_ ID3DBlob** ppCode, ID3DBlob** ppErrorMsgs )
+{
+    if( pDefines != nullptr )       // unsupported
+        throw std::exception(); 
+    if( pInclude != nullptr )       // unsupported
+        throw std::exception( );
+    if( ppErrorMsgs != nullptr )    // unsupported
+        throw std::exception( );
+    if( Flags2 != 0 )               // unsupported
+        throw std::exception( );
+
+    UINT codePage = 0;
+    ComPtr<IDxcBlobEncoding> shaderFileBlob;
+    ThrowIfFailed( s_dxcLibrary->CreateBlobFromFile( pFileName, &codePage, shaderFileBlob.GetAddressOf() ) );
+
+    // convert flags to args
+    std::vector<LPCWSTR> arguments;
+    {
+        // /Gec, /Ges Not implemented:
+        //if(Flags1 & D3DCOMPILE_ENABLE_BACKWARDS_COMPATIBILITY) arguments.push_back(L"/Gec");
+        if( Flags1 & D3DCOMPILE_ENABLE_STRICTNESS ) arguments.push_back( L"/Ges" );
+        if( Flags1 & D3DCOMPILE_IEEE_STRICTNESS ) arguments.push_back( L"/Gis" );
+        if( Flags1 & D3DCOMPILE_OPTIMIZATION_LEVEL2 )
+        {
+            switch( Flags1 & D3DCOMPILE_OPTIMIZATION_LEVEL2 )
+            {
+            case D3DCOMPILE_OPTIMIZATION_LEVEL0: arguments.push_back( L"/O0" ); break;
+            case D3DCOMPILE_OPTIMIZATION_LEVEL2: arguments.push_back( L"/O2" ); break;
+            case D3DCOMPILE_OPTIMIZATION_LEVEL3: arguments.push_back( L"/O3" ); break;
+            }
+        }
+        if( Flags1 & D3DCOMPILE_WARNINGS_ARE_ERRORS )
+            arguments.push_back( L"/WX" );
+        // Currently, /Od turns off too many optimization passes, causing incorrect DXIL to be generated.
+        // Re-enable once /Od is implemented properly:
+        //if(Flags1 & D3DCOMPILE_SKIP_OPTIMIZATION) arguments.push_back(L"/Od");
+        if( Flags1 & D3DCOMPILE_DEBUG )
+        {
+            arguments.push_back( L"/Zi" );
+            arguments.push_back( L"-Qembed_debug" ); // this is for the "warning: no output provided for debug - embedding PDB in shader container.  Use -Qembed_debug to silence this warning."
+        }
+        if( Flags1 & D3DCOMPILE_PACK_MATRIX_ROW_MAJOR ) arguments.push_back( L"/Zpr" );
+        if( Flags1 & D3DCOMPILE_PACK_MATRIX_COLUMN_MAJOR ) arguments.push_back( L"/Zpc" );
+        if( Flags1 & D3DCOMPILE_AVOID_FLOW_CONTROL ) arguments.push_back( L"/Gfa" );
+        if( Flags1 & D3DCOMPILE_PREFER_FLOW_CONTROL ) arguments.push_back( L"/Gfp" );
+        // We don't implement this:
+        //if(Flags1 & D3DCOMPILE_PARTIAL_PRECISION) arguments.push_back(L"/Gpp");
+        if( Flags1 & D3DCOMPILE_RESOURCES_MAY_ALIAS ) arguments.push_back( L"/res_may_alias" );
+
+    }
+
+#ifdef USE_DASH_VD
+    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    arguments.push_back( L"-Vd" );
+    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+#endif
+
+    std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> converter;
+
+    std::wstring longEntryPoint = converter.from_bytes( pEntrypoint );
+    std::wstring longShaderModel = converter.from_bytes( pTarget );
+
+    // we've got to up the shader model - old ones no longer supported
+    if( longShaderModel[3] < L'6' )
+        longShaderModel[3] = L'6';
+
+    ComPtr<IDxcOperationResult> operationResult;
+
+    ThrowIfFailed( s_dxcCompiler->Compile( shaderFileBlob.Get( ), pFileName, longEntryPoint.c_str( ), longShaderModel.c_str( ), arguments.data( ), (UINT32)arguments.size( ), nullptr, 0, nullptr, operationResult.GetAddressOf( ) ) );
+
+    HRESULT hr;
+    if( operationResult != nullptr )
+        operationResult->GetStatus( &hr );
+    else
+    {
+        OutputDebugStringA( "operationResult == nullptr" );
+        return E_FAIL;
+    }
+
+    if( SUCCEEDED( hr ) )
+        return operationResult->GetResult( (IDxcBlob**)ppCode );
+    else
+    {
+        std::string outErrorInfo;
+        ComPtr<IDxcBlobEncoding> blobErrors;
+        if( FAILED( operationResult->GetErrorBuffer( blobErrors.GetAddressOf() ) ) )
+            { outErrorInfo = "Unknown shader compilation error"; assert( false ); }
+            
+        BOOL known = false; UINT32 codePage;
+        if( FAILED( blobErrors->GetEncoding( &known, &codePage ) ) )
+            { outErrorInfo = "Unknown shader compilation error"; assert( false ); }
+        else
+        {
+            if( !known || codePage != CP_UTF8 )
+            {
+                outErrorInfo = "Unknown shader compilation error - unsupported error message encoding";
+            }
+            else
+            {
+                outErrorInfo = std::string( (char*)blobErrors->GetBufferPointer( ), blobErrors->GetBufferSize()-1 );
+            }
+        }
+        OutputDebugStringA( outErrorInfo.c_str() );
+        return hr;
+    }
+}
+
+#endif
+
 // Load the sample assets.
 void D3D12HelloTriangle::LoadAssets()
 {
@@ -160,8 +303,13 @@ void D3D12HelloTriangle::LoadAssets()
         UINT compileFlags = 0;
 #endif
 
+#if defined(USE_DXC)
+        ThrowIfFailed( DXCCompileFromFile( GetAssetFullPath( L"shaders.hlsl" ).c_str( ), nullptr, nullptr, "VSMain", "vs_5_0", compileFlags, 0, &vertexShader, nullptr ) );
+        ThrowIfFailed( DXCCompileFromFile( GetAssetFullPath( L"shaders.hlsl" ).c_str( ), nullptr, nullptr, "PSMain", "ps_5_0", compileFlags, 0, &pixelShader, nullptr ) );
+#else
         ThrowIfFailed(D3DCompileFromFile(GetAssetFullPath(L"shaders.hlsl").c_str(), nullptr, nullptr, "VSMain", "vs_5_0", compileFlags, 0, &vertexShader, nullptr));
         ThrowIfFailed(D3DCompileFromFile(GetAssetFullPath(L"shaders.hlsl").c_str(), nullptr, nullptr, "PSMain", "ps_5_0", compileFlags, 0, &pixelShader, nullptr));
+#endif
 
         // Define the vertex input layout.
         D3D12_INPUT_ELEMENT_DESC inputElementDescs[] =
