@@ -55,16 +55,17 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <CustomBuild Include="shaders.hlsl">
-      <Filter>Assets\Shaders</Filter>
-    </CustomBuild>
-  </ItemGroup>
-  <ItemGroup>
     <CopyFileToFolders Include="dxc\dxcompiler.dll">
       <Filter>dxc</Filter>
     </CopyFileToFolders>
     <CopyFileToFolders Include="dxc\dxil.dll">
       <Filter>dxc</Filter>
+    </CopyFileToFolders>
+    <CopyFileToFolders Include="dxc\dxc.exe">
+      <Filter>dxc</Filter>
+    </CopyFileToFolders>
+    <CopyFileToFolders Include="shaders.hlsl">
+      <Filter>Assets\Shaders</Filter>
     </CopyFileToFolders>
   </ItemGroup>
 </Project>

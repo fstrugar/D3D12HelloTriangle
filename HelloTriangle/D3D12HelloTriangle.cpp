@@ -13,7 +13,6 @@
 #include "D3D12HelloTriangle.h"
 
 #define USE_DXC
-#define USE_DASH_VD
 
 #ifdef USE_DXC
 #include <locale>
@@ -217,14 +216,6 @@ HRESULT DXCCompileFromFile( _In_ LPCWSTR pFileName, CONST D3D_SHADER_MACRO* pDef
 
     }
 
-#ifdef USE_DASH_VD
-    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    arguments.push_back( L"-Vd" );
-    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-#endif
-
     std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> converter;
 
     std::wstring longEntryPoint = converter.from_bytes( pEntrypoint );
@@ -257,7 +248,7 @@ HRESULT DXCCompileFromFile( _In_ LPCWSTR pFileName, CONST D3D_SHADER_MACRO* pDef
             { outErrorInfo = "Unknown shader compilation error"; assert( false ); }
             
         BOOL known = false; UINT32 codePage;
-        if( FAILED( blobErrors->GetEncoding( &known, &codePage ) ) )
+        if( blobErrors == nullptr || FAILED( blobErrors->GetEncoding( &known, &codePage ) ) || blobErrors->GetBufferSize() == 0 )
             { outErrorInfo = "Unknown shader compilation error"; assert( false ); }
         else
         {
@@ -280,6 +271,76 @@ HRESULT DXCCompileFromFile( _In_ LPCWSTR pFileName, CONST D3D_SHADER_MACRO* pDef
 // Load the sample assets.
 void D3D12HelloTriangle::LoadAssets()
 {
+#define TEST_COMPILE_IN_LOOP
+//#define DISABLE_VALIDATION_BUT_COMPARE_OUTPUTS
+
+    // loop a couple of times until we trigger the "Gradient operations are not affected by wave-sensitive data or control flow." error
+#ifdef TEST_COMPILE_IN_LOOP
+    {
+        UINT codePage = 0;
+        ComPtr<IDxcBlobEncoding> shaderFileBlob;
+        ThrowIfFailed( s_dxcLibrary->CreateBlobFromFile( L"shaders.hlsl", &codePage, shaderFileBlob.GetAddressOf( ) ) );
+
+        std::vector<LPCWSTR> arguments;
+        arguments.push_back( L"/Zi" );
+        arguments.push_back( L"-Qembed_debug" );
+
+        ComPtr<IDxcOperationResult> operationResult;
+
+#ifdef DISABLE_VALIDATION_BUT_COMPARE_OUTPUTS
+        ComPtr<IDxcBlob> compareResult;
+        arguments.push_back( L"-Vd" );          // disable validation
+#endif
+
+        for( int i = 0; i < 100; i++ )
+        {
+            OutputDebugStringA( ( "loop: " + std::to_string( i ) + " : " ).c_str( ) );
+            ComPtr<IDxcOperationResult> operationResult;
+            // ThrowIfFailed( s_dxcCompiler->Compile( shaderFileBlob.Get( ), L"shaders.hlsl", L"PSMain", L"ps_6_0", nullptr, 0, nullptr, 0, nullptr, operationResult.GetAddressOf( ) ) );
+            ThrowIfFailed( s_dxcCompiler->Compile( shaderFileBlob.Get( ), L"shaders.hlsl", L"PSMain", L"ps_6_0", arguments.data( ), (UINT32)arguments.size( ), nullptr, 0, nullptr, operationResult.GetAddressOf( ) ) );
+            HRESULT hr;
+            ThrowIfFailed( operationResult->GetStatus( &hr ) );
+            if( SUCCEEDED( hr ) )
+            {
+                OutputDebugStringA( "   all good\n" );
+
+#ifdef DISABLE_VALIDATION_BUT_COMPARE_OUTPUTS
+                ComPtr<IDxcBlob> localResult;
+                ThrowIfFailed( operationResult->GetResult( localResult.GetAddressOf() ) );
+
+                if( compareResult == nullptr )
+                {
+                    compareResult = localResult;
+                    OutputDebugStringA( "   - compare result stored\n" );
+                }
+                else
+                {
+                    if( compareResult->GetBufferSize() == localResult->GetBufferSize() && 
+                        memcmp( compareResult->GetBufferPointer(), localResult->GetBufferPointer(), localResult->GetBufferSize() ) == 0 )
+                    {
+                        OutputDebugStringA( "   - compare result identical, all good!\n" );
+                    }
+                    else
+                    {
+                        OutputDebugStringA( "   - ERROR: compare result different!\n" );
+                        ThrowIfFailed( E_FAIL );
+                    }
+
+                }
+#endif
+            }
+            else
+            {
+                OutputDebugStringA( "   ERROR:\n" );
+                ComPtr<IDxcBlobEncoding> blobErrors;
+                ThrowIfFailed( operationResult->GetErrorBuffer( blobErrors.GetAddressOf( ) ) );
+                OutputDebugStringA( (char*)blobErrors->GetBufferPointer( ) );
+            }
+            ThrowIfFailed( hr );
+        }
+    }
+#endif
+
     // Create an empty root signature.
     {
         CD3DX12_ROOT_SIGNATURE_DESC rootSignatureDesc;
