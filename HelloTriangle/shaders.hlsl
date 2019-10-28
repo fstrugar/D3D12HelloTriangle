@@ -36,9 +36,9 @@ float4 PSMain(PSInput input) : SV_TARGET
 {
     float4 color = input.color;
     [loop] for( int i = 0; i < uint(input.position.x) % 10; i++ )
-        color += (uint(input.position.y) % 10) * 0.01;
-    float somethingA = ddx_fine( color.x );
-    float somethingB = QuadReadLaneAt( input.position.x, 0 );
+        color.x += input.position.y / 10.0;
+    float somethingA = ddx( color.x );
+    float somethingB = QuadReadLaneAt( color.x, 0 );
     color.x += somethingA * somethingB;
     return color;
 }
