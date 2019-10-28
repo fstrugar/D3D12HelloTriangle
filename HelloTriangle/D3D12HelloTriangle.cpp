@@ -292,7 +292,7 @@ void D3D12HelloTriangle::LoadAssets()
         arguments.push_back( L"-Vd" );          // disable validation
 #endif
 
-        for( int i = 0; i < 100; i++ )
+        for( int i = 0; i < 200; i++ )
         {
             OutputDebugStringA( ( "loop: " + std::to_string( i ) + " : " ).c_str( ) );
             ComPtr<IDxcOperationResult> operationResult;
